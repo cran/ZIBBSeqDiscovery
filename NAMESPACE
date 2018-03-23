@@ -1,0 +1,2 @@
+exportPattern("^[[:alpha:]]+")
+importFrom("stats", "lm", "lm.fit", "optim", "pnorm", "pt", "qlogis", "quantile", "var")

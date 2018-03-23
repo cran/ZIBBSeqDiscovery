@@ -1,0 +1,116 @@
+---
+title: "Vignette for ZIBBSeqDiscovery"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignettes for ZIBBSeqDiscovery}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+# Introduction
+This vignette gives an example about using ZIBBSeqDiscovery to analysis microbiome counts data and evaluate the associate between phenotype of interest and the composition of the counts. ZIBBSeqDiscovery employs zero-inflated beta binomial to model the distribution of the microbiome counts data, and apply moment corrected correlation (MCC) approach to adjust the p values.
+
+
+# Data requirement
+At a minimum, ZIBBSeqDiscovery requires a *count data* matrix, *predictor (design)* matrix, and *zero inflation related* matrix.
+
+* Count data matrix $Y$: microbiome counts data with $m$ rows and $n$ columns represent $m$ OTUs and $n$ samples.
+
+* Predictor matrix $X$: with $n$ rows and $p$ column. By default, the first column is the intercept term and the second column represents for the phenotype we are interested in.
+
+* Zero inflation related matrix $Z$: with $n$ rows and $q$ column. By default, the first column represents for the intercept term.
+
+
+# Notation and models
+Let $Y = (y_{ij}) \in \mathbb{Z}^{m \times n}$ be the count matrix, and each element $y_{ij}$ represents the count of OTU $i$ in sample $j$ ($i = 1,\ldots,m, j=1,\ldots,n$). Let $s_j = \sum_{i=1}^m y_{ij}$ be the library size for sample $j$. We model the distribution of microbiome counts data using a zero-inflated beta binomial as,
+
+$$f(y_{ij}|\alpha_{1ij}, \alpha_{2ij}, \pi_{ij}) = \pi_{ij} I_{y_{ij}=0} + (1 - \pi_{ij}) {\binom{s_j}{y_{ij}}} \frac{\mathrm{B}(y_{ij}+\alpha_{1ij},s_j-y_{ij}+\alpha_{2ij})}{\mathrm{B}(\alpha_{1ij},\alpha_{2ij})}$$
+
+We can interpret the above modelling as: assume the count $y_{ij}$ comes from a mixture of zero and a beta binomial distribution. The beta-binomial model assumes that $y_{ij}$ follows a binomial distribution $Bin(s_j, \mu_{ij})$, and $\mu_{ij} \sim Beta(\alpha_{1ij}, \alpha_{2ij})$.
+
+We will then re-parameterize $(\alpha_{1ij}, \alpha_{2ij})$ as: $\alpha_{1ij} = E(\mu_{ij}) (1 - \phi_i)/\phi_i$, and $\alpha_{2ij} = (1 - E(\mu_{ij})) (1 - \phi_i)/\phi_i$. The re-parameterized parameters $(E(\mu_{ij}), \phi_i)$ are easy to interpret: $E(\mu_{ij})$ is the expectation of probability that a single OTU count in sample $j$ maps to OTU $i$, and $\phi_i$ is the overdispersion compared to the binomial for OTU $i$.
+
+Two link functions are employed in order to include the effects of covariates,
+
+* zero model: $\mathrm{logit} (\pi_{ij}) = \log \left(\frac{\pi_{ij}}{1 - \pi_{ij}}\right) = z_j^T \eta_i$, where $z_j = (z_{0,j}, \ldots, z_{q-1,j})^T \in \mathbb{R}^q$ is the vector of zero-inflation related covariates (including the intercept, thus $z_{0,j}=1$) for sample $j$. In this package, we use $q=2$, and define $z_j$ as $z_j^T = (1, \log s_j)$. Denote $Z = (z_1, \ldots, z_n)^T \in \mathbb{R}^{n \times q}$ as the zero inflation related matrix.
+
+* count model: $\mathrm{logit} (E (\mu_{ij})) = \log \left(\frac{E (\mu_{ij})}{1 - E (\mu_{ij})}\right) = x_j^T \beta_i$ where $x_j = (x_{0,j}, \ldots, x_{p-1,j})^T \in \mathbb{R}^p$ is the vector of phenotypes of interest (the design matrix includes the intercept, thus $x_{0,j}=1$) for sample $j$ and $\beta_i = (\beta_{0,i},\ldots,\beta_{p-1,i})^T \in \mathbb{R}^p$ is the vector of corresponding coefficients for OTU $i$. By default, the second column of the design matrix $X$ denote the phenotype/covariate we are interested in. Thus, ZIBBSeqDiscovery test the hypothesis that $\beta_{1,i}=0$.
+
+
+# Data analysis example
+
+## Data source
+
+We use the real kostic data set ([Kostic, 2012]) which has 2505 OTUs and 185 samples. The interested phenotype here is the health status for samples. To save computing time, we will only use the first 300 OTUs in the example below.
+
+## Demo example
+
+First, let's load the package and data
+
+```{r, results='hide'}
+rm(list = ls())
+library(ZIBBSeqDiscovery)
+data(kostic.x)
+data(kostic.y)
+```
+
+We need to remove OTUs which has zero count across all samples.
+
+
+```{r}
+kostic.x <- kostic.x[which(rowSums(kostic.x)>0),]
+kostic.x <- kostic.x[1:300, ]
+```
+
+Now, let's construct the design matrix and zero inflation related matrix.
+
+```{r}
+kostic.y <- cbind(1, kostic.y=="Tumor")
+kostic.z <- cbind(1, log(colSums(kostic.x)))
+```
+
+We first fit the ZIBB model with *free* approach.
+```{r, warning=FALSE}
+out.free <- fitZIBB(kostic.x, kostic.y, kostic.z, mode="free")
+```
+
+And then fit with *constrained* approaching using the estimation from *free* approach as initial values.
+```{r, warning=FALSE}
+out.constrained <- fitZIBB(kostic.x, kostic.y, kostic.z, mode="constrained", 
+                           gn=3, betastart=out.free$betahat, 
+                           psi.start=out.free$psi, eta.start=out.free$zeroCoef)
+```
+
+Note it will take several minutes to run through the *fitZIBB* function depending on the configuration of your computer. Finally, use MCC method to adjust the p values (*i.e.* replace NAs in the p values by the results from MCC).
+```{r}
+out.free.mcc <- mcc.adj(out.free, kostic.x, kostic.y, kostic.z, K=4)
+out.constrained.mcc <- mcc.adj(out.constrained, kostic.x, kostic.y, kostic.z, K=4)
+```
+
+In order to check the effects of MCC adjustment, we count how many NAs in the reported p values before and after MCC adjustment. Note that NA appears mostly in the cases when the OTU counts are zero in most of the samples. So we check the cases such that OTU has 180, 181, 182, 183, and 184 zero counts across the 185 samples respectively.
+
+```{r}
+kostic.x.0 <- rowSums(kostic.x==0)
+for (i in 1:5) {
+  idx <- kostic.x.0 == (185-i)
+  if (i==1) {
+    sum.df <- data.frame(zero.counts = 185-i, N = sum(idx), 
+                         Number.NA.free = sum(is.na(out.free$p[idx])), 
+                         Number.NA.constrained = sum(is.na(out.constrained$p[idx])), 
+                         Number.NA.free.MCC = sum(is.na(out.free.mcc$p[idx])), 
+                         Number.NA.constrained.MCC = sum(is.na(out.constrained.mcc$p[idx])))
+  } else {
+    sum.df <- rbind(sum.df, c(185-i, sum(idx), sum(is.na(out.free$p[idx])),
+                              sum(is.na(out.constrained$p[idx])),
+                              sum(is.na(out.free.mcc$p[idx])),
+                              sum(is.na(out.constrained.mcc$p[idx]))))
+  }
+}
+print.data.frame(sum.df, right = FALSE)
+```
+
+We should notice that the NAs are fewer after the MCC adjustment.
+
+# References
+
+Kostic, A. D., Gevers, D., Pedamallu, C. S., Michaud, M., Duke, F., Earl, A. M., Ojesina, A. I., Jung, J., Bass, A. J., Tabernero, J., et al. (2012). Genomic analysis identifies association of fusobacterium with colorectal carcinoma. Genome research 22, 292-298.
